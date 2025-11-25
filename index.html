@@ -53,34 +53,6 @@
 
     <div id="loading">SYSTEM INITIALIZING...<br><span style="font-size:14px">Loading Hologram Assets</span></div>
 
-    <button id="start-button">Tap to Start Camera</button> 
-    ```
-
-同时，在 `<style>` 标签中添加该按钮的样式，使其覆盖整个屏幕：
-
-```css
-    /* ... (其他样式) ... */
-
-    #start-button {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 10; /* 确保它在最顶层 */
-        background: rgba(0, 0, 0, 0.7);
-        color: white;
-        font-size: 20px;
-        border: none;
-        cursor: pointer;
-        opacity: 1;
-        transition: opacity 0.5s;
-    }
-    #start-button.hidden {
-        opacity: 0;
-        pointer-events: none; /* 隐藏后移除点击事件 */
-    }
-
     <div id="ui-layer">
         <div class="panel">
             <h1>EARTH HOLO-VIEW</h1>
@@ -150,7 +122,7 @@ const MIN_SPATIAL_SEPARATION = 0.20;
     const earthTexture = textureLoader.load('2k_earth_daymap.jpg'); 
     
     // 2. 地球主体
-    const earthGeo = new THREE.SphereGeometry(2, 32, 32);
+    const earthGeo = new THREE.SphereGeometry(2, 64, 64);
     const earthMat = new THREE.MeshPhongMaterial({
         map: earthTexture,
         color: 0xaaaaaa,
@@ -363,80 +335,22 @@ const MIN_SPATIAL_SEPARATION = 0.20;
     }
 
     // MediaPipe 初始化
-    // ==========================================
-// PART 2: MEDIAPIPE 手势识别 & 交互逻辑
-// (逻辑已重构为延迟启动)
-// ==========================================
-
-const uiHandCount = document.getElementById('hand-count');
-// ... (其他 UI 元素定义保持不变) ...
-const videoElement = document.getElementById('video-input');
-const startButton = document.getElementById('start-button'); // 【新增】获取启动按钮
-
-// 状态重置函数 (保持不变)
-function resetRotationState() {
-    // ... (内容不变) ...
-}
-
-// 核心回调函数 (修改 onResults, 保持其内容不变，但确保加载画面隐藏)
-function onResults(results) {
-    document.getElementById('loading').style.display = 'none'; // 确保在成功处理时隐藏加载文本
-    // ... (onResults 的全部逻辑，保持不变) ...
-}
-
-
-// 【新增】初始化和启动函数
-function startApp() {
-    // 隐藏启动按钮
-    startButton.classList.add('hidden'); 
-    
-    // 【新增】提供即时反馈，确认JS执行
-    document.getElementById('loading').innerHTML = 
-        "SYSTEM INITIALIZING...<br><span style='font-size:14px'>Attempting Camera Activation...</span>";
-    document.getElementById('loading').style.display = 'block';
-
-    // ... (后续 MediaPipe 和 CameraUtils 初始化代码)
-    
-    // MediaPipe 初始化
     const hands = new Hands({locateFile: (file) => {
         return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
     }});
     hands.setOptions({
-        maxNumHands: 2, 
+        maxNumHands: 2, // 允许同时检测两只手
         modelComplexity: 1,
-        // 采用兼容性最高的设置，以确保启动成功
-        minDetectionConfidence: 0.5, 
-        minTrackingConfidence: 0.5
+        minDetectionConfidence: 0.8,
+        minTrackingConfidence: 0.8
     });
     hands.onResults(onResults);
 
-    // CameraUtils 初始化
     const cameraUtils = new Camera(videoElement, {
         onFrame: async () => { await hands.send({image: videoElement}); },
-        // 采用 iOS/Safari 兼容性更高的参数格式
-        video: {
-            // 请求 640x480 的理想分辨率
-            width: { ideal: 640 }, 
-            height: { ideal: 480 },
-            // 明确指定前置摄像头 (更标准的 WebRTC 格式)
-            facingMode: { ideal: 'user' } 
-        }
+        width: 1280, height: 720
     });
-    
-    try {
-        // 启动摄像头流 (使用 try/catch 捕获可能的同步错误)
-        cameraUtils.start();
-    } catch (error) {
-        // 如果同步启动失败，直接向用户显示错误
-        document.getElementById('loading').innerHTML = 
-            "CAMERA START FAILED! <br> " + 
-            (error.name || "Unknown Device Error") + 
-            "<br>Please check browser permissions and restart.";
-        document.getElementById('loading').style.display = 'block';
-    }
-
-// 【新增】监听用户点击事件
-startButton.addEventListener('click', startApp);
+    cameraUtils.start();
 
     // ==========================================
     // PART 3: 渲染循环
@@ -456,9 +370,4 @@ startButton.addEventListener('click', startApp);
     animate();
 </script>
 </body>
-
 </html>
-
-
-
-
