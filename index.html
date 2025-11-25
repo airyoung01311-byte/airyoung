@@ -1,0 +1,373 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Holographic Earth - Dual-Hand Zoom</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="HoloEarth">
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        #video-input { display: none; } 
+        
+        /* UI 界面设计 */
+        #ui-layer {
+            position: absolute; top: 20px; left: 20px; z-index: 2;
+            color: #00ffff; pointer-events: none;
+            user-select: none;
+        }
+        .panel {
+            border: 1px solid rgba(0, 255, 255, 0.4);
+            background: rgba(0, 15, 30, 0.7);
+            padding: 20px;
+            width: 280px;
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.1);
+            backdrop-filter: blur(4px);
+        }
+        h1 { margin: 0 0 15px 0; font-size: 18px; letter-spacing: 2px; border-bottom: 1px solid #00ffff; padding-bottom: 5px; text-shadow: 0 0 8px #00ffff; }
+        .data-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px; align-items: center;}
+        .value { color: #fff; font-weight: bold; text-shadow: 0 0 2px white;}
+        
+        /* 动态变化的数值颜色 */
+        .highlight { color: #ff0055; text-shadow: 0 0 5px #ff0055; }
+        
+        #status-log { position: absolute; bottom: 20px; left: 20px; color: #00ffff; font-size: 12px; opacity: 0.7; }
+        
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 24px; z-index: 10; text-align: center;
+            text-shadow: 0 0 10px cyan;
+        }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loading">SYSTEM INITIALIZING...<br><span style="font-size:14px">Loading Hologram Assets</span></div>
+
+    <div id="ui-layer">
+        <div class="panel">
+            <h1>EARTH HOLO-VIEW</h1>
+            <div class="data-row"><span>SYSTEM:</span><span class="value">CONNECTED</span></div>
+            <div class="data-row"><span>MODE:</span><span class="value" id="mode-display">IDLE</span></div>
+            <hr style="border-color: rgba(0,255,255,0.2); margin: 10px 0;">
+            <div class="data-row"><span>HANDS DETECTED:</span><span id="hand-count" style="color:red">0</span></div>
+            
+            <div class="data-row">
+                <span>DUAL-HAND DIST (Euclidean):</span>
+                <span id="dist-data" class="value">0.0000</span>
+            </div>
+            
+            <div style="width: 100%; height: 4px; background: #333; margin-top:5px;">
+                <div id="dist-bar" style="width: 0%; height: 100%; background: #00ffff; transition: width 0.1s;"></div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="status-log">Waiting for video input...</div>
+
+    <video id="video-input"></video>
+    <div id="canvas-container"></div>
+
+<script>
+    // ==========================================
+    // 全局变量和配置
+    // ==========================================
+    
+    // --- 旋转控制 ---
+    let previousHandX = null;
+    let previousHandY = null;
+    let currentVelocityY = 0;
+    let currentVelocityX = 0;
+    const ROTATION_SENSITIVITY = 8; // 建议值：降低旋转灵敏度
+    const SMOOTHING_FACTOR = 0.9; // 建议值：提高平滑度，减少抖动
+
+    // --- 缩放控制 ---
+    const MIN_HAND_DISTANCE = 0.1; // 双手最近距离 (归一化坐标 0.0 ~ 1.0)
+    const MAX_HAND_DISTANCE = 0.9; // 双手最远距离
+    const MIN_EARTH_SCALE = 0.8;   // 地球最小缩放
+    const MAX_EARTH_SCALE = 3.0;   // 地球最大缩放
+    // --- 空间过滤 (新增) ---
+// 定义两只手必须达到的最小间距 (归一化坐标)，低于此值将视为误判
+const MIN_SPATIAL_SEPARATION = 0.20;
+    const ZOOM_SMOOTHING_FACTOR = 0.1; 
+
+    // ==========================================
+    // PART 1: THREE.JS 视觉构建 
+    // ==========================================
+    
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000510, 0.02);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 5;
+
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.outputEncoding = THREE.sRGBEncoding; 
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    // 1. 地球纹理
+    const textureLoader = new THREE.TextureLoader();
+    // 建议使用在线链接 'https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg' 以确保加载成功
+    // 如果您使用本地文件，请确保 Live Server 运行正常且路径正确
+    const earthTexture = textureLoader.load('2k_earth_daymap.jpg'); 
+    
+    // 2. 地球主体
+    const earthGeo = new THREE.SphereGeometry(2, 64, 64);
+    const earthMat = new THREE.MeshPhongMaterial({
+        map: earthTexture,
+        color: 0xaaaaaa,
+        emissive: 0x002244,
+        emissiveIntensity: 0.8,
+        specular: 0x111111,
+        shininess: 10
+    });
+    const earth = new THREE.Mesh(earthGeo, earthMat);
+    scene.add(earth);
+
+    // 3. 大气层光晕
+    const glowTexture = textureLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/sprites/glow.png');
+    const glowMat = new THREE.SpriteMaterial({
+        map: glowTexture,
+        color: 0x00ffff, 
+        transparent: true,
+        opacity: 0.6,
+        blending: THREE.AdditiveBlending
+    });
+    const glow = new THREE.Sprite(glowMat);
+    glow.scale.set(5.5, 5.5, 1.0);
+    earth.add(glow); 
+
+    // 4. 外部科技线框
+    const wireGeo = new THREE.SphereGeometry(2.02, 32, 32);
+    const wireMat = new THREE.MeshBasicMaterial({
+        color: 0x00aaff,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.15
+    });
+    const wireMesh = new THREE.Mesh(wireGeo, wireMat);
+    earth.add(wireMesh);
+
+    // 5. 灯光系统
+    const ambientLight = new THREE.AmbientLight(0x333333);
+    scene.add(ambientLight);
+    const sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
+    sunLight.position.set(5, 3, 5);
+    scene.add(sunLight);
+    const backLight = new THREE.PointLight(0x0088ff, 2, 20);
+    backLight.position.set(-3, 1, -3);
+    scene.add(backLight);
+
+    // 6. 背景星尘
+    const starsGeo = new THREE.BufferGeometry();
+    const starsCount = 1000;
+    const starsPos = new Float32Array(starsCount * 3);
+    for(let i=0; i<starsCount*3; i++) {
+        starsPos[i] = (Math.random() - 0.5) * 15;
+    }
+    starsGeo.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+    const starsMat = new THREE.PointsMaterial({size: 0.02, color: 0xffffff, transparent: true, opacity: 0.5});
+    const stars = new THREE.Points(starsGeo, starsMat);
+    scene.add(stars);
+
+
+    // ==========================================
+    // PART 2: MEDIAPIPE 手势识别 & 交互逻辑
+    // ==========================================
+    
+    const uiHandCount = document.getElementById('hand-count');
+    const uiDistData = document.getElementById('dist-data');
+    const uiDistBar = document.getElementById('dist-bar');
+    const uiMode = document.getElementById('mode-display');
+    const videoElement = document.getElementById('video-input');
+
+    // 状态重置函数，用于模式切换时清空旧状态
+    function resetRotationState() {
+        previousHandX = null;
+        previousHandY = null;
+        currentVelocityY = 0;
+        currentVelocityX = 0;
+    }
+
+    function onResults(results) {
+        document.getElementById('loading').style.display = 'none';
+        
+        const handCount = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+        uiHandCount.innerText = handCount;
+
+        if (handCount >= 2) {
+        // ==========================================
+        // 模式 1: 双手控制 (缩放)
+        // ==========================================
+
+        // 1. 计算两只手的腕部 (Landmark 0) 之间的距离
+        const hand1 = results.multiHandLandmarks[0][0];
+        const hand2 = results.multiHandLandmarks[1][0];
+
+        const dx = hand1.x - hand2.x;
+        const dy = hand1.y - hand2.y;
+        const dualHandDistance = Math.sqrt(dx*dx + dy*dy);
+
+        // 【关键过滤】如果双手距离太近，视为误判或噪音，转而执行单手逻辑
+        if (dualHandDistance < MIN_SPATIAL_SEPARATION) {
+            // 执行单手逻辑所需的 UI/状态复位
+            uiMode.innerText = "SINGLE-HAND (Filtered)";
+            uiMode.className = "value";
+            uiDistData.innerText = dualHandDistance.toFixed(4) + " (TOO CLOSE)";
+            uiDistBar.style.width = "0%";
+            uiDistBar.style.background = "#ffff00"; // 提示用户距离过近
+
+            // **不执行缩放**，让程序进入单手旋转状态 (但我们没有手势数据，所以下一帧会进入 IDLE)
+            resetRotationState();
+
+        } else {
+            // 距离足够远，执行正常的缩放逻辑
+            uiMode.innerText = "DUAL-HAND ZOOM";
+            uiMode.className = "value highlight";
+
+            // 2. UI 更新
+            uiDistData.innerText = dualHandDistance.toFixed(4);
+            let barPercent = ((dualHandDistance - MIN_HAND_DISTANCE) / (MAX_HAND_DISTANCE - MIN_HAND_DISTANCE)) * 100;
+            barPercent = Math.max(0, Math.min(100, barPercent));
+            uiDistBar.style.width = barPercent + "%";
+            uiDistBar.style.background = "#ff0055";
+
+            // 3. 距离映射到缩放比例
+            const targetScale = THREE.MathUtils.mapLinear(
+                dualHandDistance, 
+                MIN_HAND_DISTANCE, 
+                MAX_HAND_DISTANCE, 
+                MIN_EARTH_SCALE, 
+                MAX_EARTH_SCALE
+            );
+
+            // 4. 应用平滑缩放
+            earth.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), ZOOM_SMOOTHING_FACTOR);
+
+            // 5. 颜色反馈
+            earthMat.emissive.setHex(0x550022); 
+            wireMat.color.setHex(0xff0055);
+
+            // 6. 重置旋转状态
+            resetRotationState();
+        }
+
+    } // 接下来是 else if (handCount === 1) 块
+
+         else if (handCount === 1) {
+            // ==========================================
+            // 模式 2: 单手控制 (旋转) - **无缩放逻辑**
+            // ==========================================
+            uiMode.innerText = "SINGLE-HAND ROTATE";
+            uiMode.className = "value";
+            uiDistData.innerText = "0.0000"; // 清理距离显示
+            uiDistBar.style.width = "0%";
+            uiDistBar.style.background = "#00ffff";
+            
+            // 【关键点】地球缩放维持上一次的双手动操作结果
+            
+            const landmarks = results.multiHandLandmarks[0];
+
+            // 颜色反馈恢复
+            earthMat.emissive.setHex(0x002244);
+            wireMat.color.setHex(0x00aaff);
+            
+            // 1. 计算手掌中心
+            const indexBase = landmarks[5];
+            const wrist = landmarks[0];
+            const handCenter = { 
+                x: (indexBase.x + wrist.x) / 2, 
+                y: (indexBase.y + wrist.y) / 2 
+            };
+            
+            // 2. 增量控制 (Velocity Control) - 旋转逻辑
+            if (previousHandX !== null) {
+                const rawDeltaX = handCenter.x - previousHandX;
+                const rawDeltaY = handCenter.y - previousHandY;
+
+                const targetVelocityY = rawDeltaX * ROTATION_SENSITIVITY;
+                const targetVelocityX = rawDeltaY * ROTATION_SENSITIVITY;
+                
+                const alpha = 1 - SMOOTHING_FACTOR; 
+                
+                currentVelocityY = THREE.MathUtils.lerp(currentVelocityY, targetVelocityY, alpha);
+                currentVelocityX = THREE.MathUtils.lerp(currentVelocityX, targetVelocityX, alpha);
+
+                earth.rotation.y += currentVelocityY;
+                earth.rotation.x += currentVelocityX;
+            }
+
+            // 3. 存储当前位置
+            previousHandX = handCenter.x;
+            previousHandY = handCenter.y;
+            
+        } else {
+            // ==========================================
+            // 模式 3: 无手势 (自转/待机) - **无缩放逻辑**
+            // ==========================================
+            uiMode.innerText = "IDLE (Auto-Rotate)";
+            uiMode.className = "value";
+            uiDistData.innerText = "0.0000";
+            uiDistBar.style.width = "0%";
+            
+            // 【关键点】地球缩放维持上一次的双手动操作结果
+            
+            // 颜色恢复
+            earthMat.emissive.setHex(0x002244);
+            wireMat.color.setHex(0x00aaff);
+
+            // 自动旋转
+            earth.rotation.y += 0.001;
+            
+            // 重置所有状态
+            resetRotationState();
+        }
+    }
+
+    // MediaPipe 初始化
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+    hands.setOptions({
+        maxNumHands: 2, // 允许同时检测两只手
+        modelComplexity: 1,
+        minDetectionConfidence: 0.8,
+        minTrackingConfidence: 0.8
+    });
+    hands.onResults(onResults);
+
+    const cameraUtils = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({image: videoElement}); },
+        width: 1280, height: 720
+    });
+    cameraUtils.start();
+
+    // ==========================================
+    // PART 3: 渲染循环
+    // ==========================================
+    function animate() {
+        requestAnimationFrame(animate);
+        stars.rotation.y -= 0.0005;
+        renderer.render(scene, camera);
+    }
+    
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+</script>
+</body>
+</html>
