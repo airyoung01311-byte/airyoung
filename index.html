@@ -388,7 +388,14 @@ function onResults(results) {
 // 【新增】初始化和启动函数
 function startApp() {
     // 隐藏启动按钮
-    startButton.classList.add('hidden');
+    startButton.classList.add('hidden'); 
+    
+    // 【新增】提供即时反馈，确认JS执行
+    document.getElementById('loading').innerHTML = 
+        "SYSTEM INITIALIZING...<br><span style='font-size:14px'>Attempting Camera Activation...</span>";
+    document.getElementById('loading').style.display = 'block';
+
+    // ... (后续 MediaPipe 和 CameraUtils 初始化代码)
     
     // MediaPipe 初始化
     const hands = new Hands({locateFile: (file) => {
@@ -406,17 +413,27 @@ function startApp() {
     // CameraUtils 初始化
     const cameraUtils = new Camera(videoElement, {
         onFrame: async () => { await hands.send({image: videoElement}); },
-        // 采用兼容性最高的低分辨率设置
+        // 采用 iOS/Safari 兼容性更高的参数格式
         video: {
-            width: 640, 
-            height: 480,
-            facingMode: 'user' 
+            // 请求 640x480 的理想分辨率
+            width: { ideal: 640 }, 
+            height: { ideal: 480 },
+            // 明确指定前置摄像头 (更标准的 WebRTC 格式)
+            facingMode: { ideal: 'user' } 
         }
     });
     
-    // 启动摄像头流 (在用户点击按钮后调用)
-    cameraUtils.start();
-}
+    try {
+        // 启动摄像头流 (使用 try/catch 捕获可能的同步错误)
+        cameraUtils.start();
+    } catch (error) {
+        // 如果同步启动失败，直接向用户显示错误
+        document.getElementById('loading').innerHTML = 
+            "CAMERA START FAILED! <br> " + 
+            (error.name || "Unknown Device Error") + 
+            "<br>Please check browser permissions and restart.";
+        document.getElementById('loading').style.display = 'block';
+    }
 
 // 【新增】监听用户点击事件
 startButton.addEventListener('click', startApp);
@@ -441,6 +458,7 @@ startButton.addEventListener('click', startApp);
 </body>
 
 </html>
+
 
 
 
