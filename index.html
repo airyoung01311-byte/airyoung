@@ -122,7 +122,7 @@ const MIN_SPATIAL_SEPARATION = 0.20;
     const earthTexture = textureLoader.load('2k_earth_daymap.jpg'); 
     
     // 2. 地球主体
-    const earthGeo = new THREE.SphereGeometry(2, 64, 64);
+    const earthGeo = new THREE.SphereGeometry(2, 32, 32);
     const earthMat = new THREE.MeshPhongMaterial({
         map: earthTexture,
         color: 0xaaaaaa,
@@ -370,4 +370,5 @@ const MIN_SPATIAL_SEPARATION = 0.20;
     animate();
 </script>
 </body>
+
 </html>
