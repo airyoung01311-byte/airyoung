@@ -346,10 +346,18 @@ const MIN_SPATIAL_SEPARATION = 0.20;
     });
     hands.onResults(onResults);
 
-    const cameraUtils = new Camera(videoElement, {
+   const cameraUtils = new Camera(videoElement, {
         onFrame: async () => { await hands.send({image: videoElement}); },
-        width: 1280, height: 720
+        // 确保使用前置摄像头，并请求较低质量的视频流以提高兼容性
+        video: {
+            // 降低分辨率，减轻手机负担，提高启动成功率
+            width: 640, 
+            height: 480,
+            // 明确指定使用前置摄像头 ('user')
+            facingMode: 'user' 
+        }
     });
+    
     cameraUtils.start();
 
     // ==========================================
@@ -372,4 +380,5 @@ const MIN_SPATIAL_SEPARATION = 0.20;
 </body>
 
 </html>
+
 
